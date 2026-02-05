@@ -133,6 +133,75 @@
             text-align: center;
             pointer-events: none;
         }
+
+        /* Мобильное управление */
+        .mobile-controls {
+            display: none;
+        }
+
+        @media (max-width: 768px), (pointer: coarse) {
+            .mobile-controls {
+                display: block;
+            }
+
+            #instructions {
+                display: none;
+            }
+        }
+
+        #joystick {
+            position: absolute;
+            bottom: 30px;
+            left: 30px;
+            width: 120px;
+            height: 120px;
+            z-index: 10;
+            pointer-events: none;
+        }
+
+        #joystickBase {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.2);
+            border: 2px solid rgba(255, 255, 255, 0.5);
+            border-radius: 50%;
+            backdrop-filter: blur(10px);
+        }
+
+        #joystickStick {
+            position: absolute;
+            width: 50px;
+            height: 50px;
+            background: rgba(255, 255, 255, 0.6);
+            border: 2px solid rgba(255, 255, 255, 0.8);
+            border-radius: 50%;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            transition: transform 0.1s ease-out;
+        }
+
+        #joystick.active #joystickStick {
+            transition: none;
+        }
+
+        #cameraControl {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 8;
+            touch-action: none;
+            display: none;
+        }
+
+        @media (max-width: 768px), (pointer: coarse) {
+            #cameraControl {
+                display: block;
+            }
+        }
     </style>
 </head>
 <body>
@@ -143,6 +212,16 @@
         <div id="fadeOverlay"></div>
         <div id="finaleText">But why?</div>
         <div id="instructions">WASD - движение | Мышь - обзор</div>
+        <div id="mobileInstructions" class="mobile-controls" style="position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); color: rgba(255, 255, 255, 0.7); font-size: 14px; z-index: 5; text-align: center; pointer-events: none;">
+            Джойстик - движение | Касание экрана - обзор
+        </div>
+        <div class="mobile-controls">
+            <div id="joystick">
+                <div id="joystickBase"></div>
+                <div id="joystickStick"></div>
+            </div>
+            <div id="cameraControl"></div>
+        </div>
         <audio id="backgroundMusic" loop>
             <source src="song.mp3" type="audio/mpeg">
             <source src="song.mp3" type="audio/mp3">
@@ -768,7 +847,7 @@
                 this.speed = 0.05;
             }
 
-            update(keys, mouseDeltaX, mouseDeltaY) {
+            update(keys, mouseDeltaX, mouseDeltaY, mobileInput = null) {
                 // Поворот камеры мышью
                 this.yaw -= mouseDeltaX * 0.002;
                 this.pitch -= mouseDeltaY * 0.002;
@@ -780,21 +859,30 @@
                 const rightX = Math.cos(this.yaw);
                 const rightZ = -Math.sin(this.yaw);
 
-                if (keys['w'] || keys['W'] || keys['ArrowUp']) {
-                    this.x += forwardX * this.speed;
-                    this.z += forwardZ * this.speed;
-                }
-                if (keys['s'] || keys['S'] || keys['ArrowDown']) {
-                    this.x -= forwardX * this.speed;
-                    this.z -= forwardZ * this.speed;
-                }
-                if (keys['a'] || keys['A'] || keys['ArrowLeft']) {
-                    this.x -= rightX * this.speed;
-                    this.z -= rightZ * this.speed;
-                }
-                if (keys['d'] || keys['D'] || keys['ArrowRight']) {
-                    this.x += rightX * this.speed;
-                    this.z += rightZ * this.speed;
+                // Мобильное управление
+                if (mobileInput) {
+                    const moveX = forwardX * mobileInput.forward + rightX * mobileInput.right;
+                    const moveZ = forwardZ * mobileInput.forward + rightZ * mobileInput.right;
+                    this.x += moveX * this.speed;
+                    this.z += moveZ * this.speed;
+                } else {
+                    // Клавиатурное управление
+                    if (keys['w'] || keys['W'] || keys['ArrowUp']) {
+                        this.x += forwardX * this.speed;
+                        this.z += forwardZ * this.speed;
+                    }
+                    if (keys['s'] || keys['S'] || keys['ArrowDown']) {
+                        this.x -= forwardX * this.speed;
+                        this.z -= forwardZ * this.speed;
+                    }
+                    if (keys['a'] || keys['A'] || keys['ArrowLeft']) {
+                        this.x -= rightX * this.speed;
+                        this.z -= rightZ * this.speed;
+                    }
+                    if (keys['d'] || keys['D'] || keys['ArrowRight']) {
+                        this.x += rightX * this.speed;
+                        this.z += rightZ * this.speed;
+                    }
                 }
             }
 
@@ -925,6 +1013,198 @@
             }
         }
 
+        // ==================== МОБИЛЬНОЕ УПРАВЛЕНИЕ ====================
+        class MobileControls {
+            constructor(game) {
+                this.game = game;
+                // Определяем мобильное устройство или устройство с touch
+                this.isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || 
+                               ('ontouchstart' in window) || (navigator.maxTouchPoints > 0) ||
+                               (window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+                this.joystickActive = false;
+                this.joystickX = 0;
+                this.joystickY = 0;
+                this.joystickCenterX = 0;
+                this.joystickCenterY = 0;
+                this.touchId = null;
+                this.cameraTouchId = null;
+                this.lastCameraTouchX = 0;
+                this.lastCameraTouchY = 0;
+                
+                if (this.isMobile) {
+                    this.setupJoystick();
+                    this.setupCameraControl();
+                }
+            }
+
+            updateJoystickPosition() {
+                const joystick = document.getElementById('joystick');
+                if (!joystick) return;
+                const rect = joystick.getBoundingClientRect();
+                this.joystickCenterX = rect.left + rect.width / 2;
+                this.joystickCenterY = rect.top + rect.height / 2;
+            }
+
+            setupJoystick() {
+                const joystick = document.getElementById('joystick');
+                const stick = document.getElementById('joystickStick');
+                
+                if (!joystick || !stick) return;
+
+                this.updateJoystickPosition();
+                const maxDistance = 50;
+
+                const handleTouchStart = (e) => {
+                    if (this.game.state !== 'PLAYING') return;
+                    this.updateJoystickPosition();
+                    const touch = e.touches[0];
+                    const x = touch.clientX;
+                    const y = touch.clientY;
+                    
+                    // Проверяем, что касание в области джойстика
+                    if (Math.abs(x - this.joystickCenterX) < 100 && 
+                        Math.abs(y - this.joystickCenterY) < 100) {
+                        this.touchId = touch.identifier;
+                        this.joystickActive = true;
+                        joystick.classList.add('active');
+                        e.preventDefault();
+                    }
+                };
+
+                const handleTouchMove = (e) => {
+                    if (!this.joystickActive || this.touchId === null) return;
+                    
+                    let touch = null;
+                    for (let i = 0; i < e.touches.length; i++) {
+                        if (e.touches[i].identifier === this.touchId) {
+                            touch = e.touches[i];
+                            break;
+                        }
+                    }
+                    
+                    if (!touch) return;
+                    
+                    const x = touch.clientX - this.joystickCenterX;
+                    const y = touch.clientY - this.joystickCenterY;
+                    const distance = Math.sqrt(x * x + y * y);
+                    
+                    if (distance > maxDistance) {
+                        const angle = Math.atan2(y, x);
+                        this.joystickX = Math.cos(angle) * maxDistance;
+                        this.joystickY = Math.sin(angle) * maxDistance;
+                    } else {
+                        this.joystickX = x;
+                        this.joystickY = y;
+                    }
+                    
+                    stick.style.transform = `translate(calc(-50% + ${this.joystickX}px), calc(-50% + ${this.joystickY}px))`;
+                    e.preventDefault();
+                };
+
+                const handleTouchEnd = (e) => {
+                    if (this.touchId === null) return;
+                    
+                    let touchEnded = false;
+                    for (let i = 0; i < e.changedTouches.length; i++) {
+                        if (e.changedTouches[i].identifier === this.touchId) {
+                            touchEnded = true;
+                            break;
+                        }
+                    }
+                    
+                    if (touchEnded) {
+                        this.joystickActive = false;
+                        this.joystickX = 0;
+                        this.joystickY = 0;
+                        this.touchId = null;
+                        joystick.classList.remove('active');
+                        stick.style.transform = 'translate(-50%, -50%)';
+                    }
+                };
+
+                joystick.addEventListener('touchstart', handleTouchStart, { passive: false });
+                document.addEventListener('touchmove', handleTouchMove, { passive: false });
+                document.addEventListener('touchend', handleTouchEnd);
+                document.addEventListener('touchcancel', handleTouchEnd);
+            }
+
+            setupCameraControl() {
+                const cameraControl = document.getElementById('cameraControl');
+                if (!cameraControl) return;
+
+                const handleTouchStart = (e) => {
+                    if (this.game.state !== 'PLAYING') return;
+                    if (this.touchId !== null) return; // Джойстик активен
+                    
+                    const touch = e.touches[0];
+                    this.cameraTouchId = touch.identifier;
+                    this.lastCameraTouchX = touch.clientX;
+                    this.lastCameraTouchY = touch.clientY;
+                    e.preventDefault();
+                };
+
+                const handleTouchMove = (e) => {
+                    if (this.cameraTouchId === null) return;
+                    
+                    let touch = null;
+                    for (let i = 0; i < e.touches.length; i++) {
+                        if (e.touches[i].identifier === this.cameraTouchId) {
+                            touch = e.touches[i];
+                            break;
+                        }
+                    }
+                    
+                    if (!touch) return;
+                    
+                    const deltaX = touch.clientX - this.lastCameraTouchX;
+                    const deltaY = touch.clientY - this.lastCameraTouchY;
+                    
+                    this.game.mouseX += deltaX;
+                    this.game.mouseY += deltaY;
+                    
+                    this.lastCameraTouchX = touch.clientX;
+                    this.lastCameraTouchY = touch.clientY;
+                    e.preventDefault();
+                };
+
+                const handleTouchEnd = (e) => {
+                    if (this.cameraTouchId === null) return;
+                    
+                    let touchEnded = false;
+                    for (let i = 0; i < e.changedTouches.length; i++) {
+                        if (e.changedTouches[i].identifier === this.cameraTouchId) {
+                            touchEnded = true;
+                            break;
+                        }
+                    }
+                    
+                    if (touchEnded) {
+                        this.cameraTouchId = null;
+                    }
+                };
+
+                cameraControl.addEventListener('touchstart', handleTouchStart, { passive: false });
+                cameraControl.addEventListener('touchmove', handleTouchMove, { passive: false });
+                cameraControl.addEventListener('touchend', handleTouchEnd);
+                cameraControl.addEventListener('touchcancel', handleTouchEnd);
+            }
+
+            getMovementInput() {
+                if (!this.isMobile || !this.joystickActive) {
+                    return { forward: 0, right: 0 };
+                }
+                
+                const maxDistance = 50;
+                const normalizedX = this.joystickX / maxDistance;
+                const normalizedY = -this.joystickY / maxDistance; // Инвертируем Y
+                
+                return {
+                    forward: Math.max(-1, Math.min(1, normalizedY)),
+                    right: Math.max(-1, Math.min(1, normalizedX))
+                };
+            }
+        }
+
         // ==================== ОСНОВНОЙ КЛАСС ИГРЫ ====================
         class Game3D {
             constructor() {
@@ -944,6 +1224,7 @@
                 this.fadeAlpha = 0;
                 this.finaleTextAlpha = 0;
                 this.time = 0;
+                this.mobileControls = null;
 
                 // Настройка WebGL
                 this.setupWebGL();
@@ -1015,6 +1296,7 @@
                 // #endregion
                 try {
                     await this.audioManager.init();
+                    this.mobileControls = new MobileControls(this);
                     this.setupEventListeners();
                     this.createStartScene();
                     this.gameLoop();
@@ -1053,7 +1335,7 @@
 
                 let isPointerLocked = false;
                 canvas.addEventListener('click', () => {
-                    if (this.state === 'PLAYING') {
+                    if (this.state === 'PLAYING' && !this.mobileControls?.isMobile) {
                         canvas.requestPointerLock();
                     }
                 });
@@ -1063,7 +1345,7 @@
                 });
 
                 document.addEventListener('mousemove', (e) => {
-                    if (isPointerLocked && this.state === 'PLAYING') {
+                    if (isPointerLocked && this.state === 'PLAYING' && !this.mobileControls?.isMobile) {
                         this.mouseX += e.movementX;
                         this.mouseY += e.movementY;
                     }
@@ -1128,14 +1410,18 @@
                     this.lastMouseX = this.mouseX;
                     this.lastMouseY = this.mouseY;
 
-                    this.camera.update(this.keys, mouseDeltaX, mouseDeltaY);
+                    // Получаем мобильный ввод, если доступен
+                    const mobileInput = this.mobileControls ? this.mobileControls.getMovementInput() : null;
+                    
+                    this.camera.update(this.keys, mouseDeltaX, mouseDeltaY, mobileInput);
                     
                     const pos = this.camera.getPosition();
                     this.distance = Math.sqrt(pos[0] * pos[0] + pos[2] * pos[2]);
                     
-                    const isMoving = this.keys['w'] || this.keys['W'] || this.keys['s'] || 
-                                   this.keys['S'] || this.keys['a'] || this.keys['A'] || 
-                                   this.keys['d'] || this.keys['D'];
+                    const isMoving = mobileInput ? (Math.abs(mobileInput.forward) > 0.1 || Math.abs(mobileInput.right) > 0.1) :
+                                   (this.keys['w'] || this.keys['W'] || this.keys['s'] || 
+                                    this.keys['S'] || this.keys['a'] || this.keys['A'] || 
+                                    this.keys['d'] || this.keys['D']);
                     this.audioManager.updateVolume(this.distance, isMoving);
 
                     if (this.distance >= FINAL_DISTANCE) {
@@ -1267,13 +1553,18 @@
 
         // ==================== ЗАПУСК ИГРЫ ====================
         window.addEventListener('load', () => {
-            new Game3D();
+            window.game = new Game3D();
         });
 
         window.addEventListener('resize', () => {
             canvas.width = window.innerWidth;
             canvas.height = window.innerHeight;
             gl.viewport(0, 0, canvas.width, canvas.height);
+            
+            // Обновляем координаты центра джойстика при изменении размера
+            if (window.game && window.game.mobileControls && window.game.mobileControls.isMobile) {
+                window.game.mobileControls.updateJoystickPosition();
+            }
         });
     </script>
 </body>
