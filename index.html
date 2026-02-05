@@ -1,0 +1,1280 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Пингвин уходит к горе - First Person 3D</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background: #000;
+            font-family: 'Arial', sans-serif;
+            overflow: hidden;
+        }
+
+        body.playing {
+            cursor: none;
+        }
+
+        #gameContainer {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        #startButton {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            padding: 20px 40px;
+            font-size: 24px;
+            background: rgba(74, 144, 226, 0.9);
+            color: white;
+            border: 2px solid rgba(255, 255, 255, 0.5);
+            border-radius: 10px;
+            cursor: pointer;
+            z-index: 10;
+            transition: all 0.3s;
+            backdrop-filter: blur(10px);
+        }
+
+        #startButton:hover {
+            background: rgba(53, 122, 189, 0.9);
+            transform: translate(-50%, -50%) scale(1.1);
+        }
+
+        #startButton.hidden {
+            display: none;
+        }
+
+        #finaleText {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 64px;
+            color: white;
+            text-shadow: 0 0 20px rgba(255, 255, 255, 0.8);
+            z-index: 20;
+            opacity: 0;
+            pointer-events: none;
+            font-weight: bold;
+            letter-spacing: 5px;
+        }
+
+        #fadeOverlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: black;
+            opacity: 0;
+            z-index: 15;
+            pointer-events: none;
+        }
+
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 20px;
+            height: 20px;
+            z-index: 5;
+            pointer-events: none;
+        }
+
+        #crosshair::before,
+        #crosshair::after {
+            content: '';
+            position: absolute;
+            background: rgba(255, 255, 255, 0.8);
+        }
+
+        #crosshair::before {
+            width: 2px;
+            height: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+
+        #crosshair::after {
+            width: 100%;
+            height: 2px;
+            top: 50%;
+            transform: translateY(-50%);
+        }
+
+        #instructions {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 14px;
+            z-index: 5;
+            text-align: center;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <canvas id="gameCanvas"></canvas>
+        <div id="crosshair"></div>
+        <button id="startButton">Уйти</button>
+        <div id="fadeOverlay"></div>
+        <div id="finaleText">But why?</div>
+        <div id="instructions">WASD - движение | Мышь - обзор</div>
+        <audio id="backgroundMusic" loop>
+            <source src="song.mp3" type="audio/mpeg">
+            <source src="song.mp3" type="audio/mp3">
+        </audio>
+    </div>
+
+    <script>
+        // ==================== КОНСТАНТЫ ====================
+        const FINAL_DISTANCE = 500;
+        const CROWD_SIZE = 30;
+        const PENGUIN_SCALE = 0.3;
+        const PLAYER_HEIGHT = 0.3; // Высота игрока над полом
+
+        // ==================== ИНИЦИАЛИЗАЦИЯ WEBGL ====================
+        const canvas = document.getElementById('gameCanvas');
+        const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+        
+        if (!gl) {
+            alert('WebGL не поддерживается в вашем браузере!');
+        }
+
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        gl.viewport(0, 0, canvas.width, canvas.height);
+
+        // ==================== ШЕЙДЕРЫ ====================
+        const vertexShaderSource = `
+            precision mediump float;
+            
+            attribute vec3 a_position;
+            attribute vec3 a_normal;
+            attribute vec2 a_texCoord;
+            
+            uniform mat4 u_projection;
+            uniform mat4 u_view;
+            uniform mat4 u_model;
+            uniform mediump vec3 u_lightDir;
+            
+            varying vec3 v_normal;
+            varying vec3 v_worldPos;
+            varying vec2 v_texCoord;
+            varying float v_light;
+            
+            void main() {
+                vec4 worldPos = u_model * vec4(a_position, 1.0);
+                v_worldPos = worldPos.xyz;
+                v_normal = mat3(u_model) * a_normal;
+                v_texCoord = a_texCoord;
+                
+                // Простое освещение
+                v_light = max(dot(normalize(v_normal), normalize(-u_lightDir)), 0.3);
+                
+                gl_Position = u_projection * u_view * worldPos;
+            }
+        `;
+
+        const fragmentShaderSource = `
+            precision mediump float;
+            
+            uniform vec3 u_color;
+            uniform vec3 u_ambientColor;
+            uniform float u_time;
+            uniform float u_fogDistance;
+            uniform vec3 u_cameraPos;
+            uniform mediump vec3 u_lightDir;
+            
+            varying vec3 v_normal;
+            varying vec3 v_worldPos;
+            varying vec2 v_texCoord;
+            varying float v_light;
+            
+            void main() {
+                vec3 color = u_color * v_light + u_ambientColor;
+                
+                // Расстояние до камеры для тумана
+                float dist = distance(v_worldPos, u_cameraPos);
+                float fogFactor = 1.0 - clamp(dist / u_fogDistance, 0.0, 1.0);
+                vec3 fogColor = vec3(0.9, 0.95, 1.0);
+                color = mix(fogColor, color, fogFactor);
+                
+                // Отражения (RTX-подобный эффект)
+                vec3 viewDir = normalize(u_cameraPos - v_worldPos);
+                vec3 normalizedLightDir = normalize(u_lightDir);
+                vec3 normalizedNormal = normalize(v_normal);
+                vec3 reflectDir = reflect(-normalizedLightDir, normalizedNormal);
+                float specular = pow(max(dot(viewDir, reflectDir), 0.0), 32.0);
+                color += vec3(specular * 0.3);
+                
+                gl_FragColor = vec4(color, 1.0);
+            }
+        `;
+
+        function createShader(gl, type, source) {
+            // #region agent log
+            fetch('http://127.0.0.1:7244/ingest/359c742f-de8c-4e53-abc0-aa808b2c9142',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.html:226',message:'createShader called',data:{type:type===gl.VERTEX_SHADER?'VERTEX':'FRAGMENT'},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'D'})}).catch(()=>{});
+            // #endregion
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                const errorLog = gl.getShaderInfoLog(shader);
+                console.error('Ошибка компиляции шейдера:', errorLog);
+                // #region agent log
+                fetch('http://127.0.0.1:7244/ingest/359c742f-de8c-4e53-abc0-aa808b2c9142',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.html:232',message:'shader compilation failed',data:{error:errorLog,type:type===gl.VERTEX_SHADER?'VERTEX':'FRAGMENT'},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'D'})}).catch(()=>{});
+                // #endregion
+                gl.deleteShader(shader);
+                return null;
+            }
+            // #region agent log
+            fetch('http://127.0.0.1:7244/ingest/359c742f-de8c-4e53-abc0-aa808b2c9142',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.html:238',message:'shader compiled successfully',data:{type:type===gl.VERTEX_SHADER?'VERTEX':'FRAGMENT'},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'D'})}).catch(()=>{});
+            // #endregion
+            return shader;
+        }
+
+        function createProgram(gl, vertexShader, fragmentShader) {
+            // #region agent log
+            fetch('http://127.0.0.1:7244/ingest/359c742f-de8c-4e53-abc0-aa808b2c9142',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.html:251',message:'createProgram called',data:{vertexShader:!!vertexShader,fragmentShader:!!fragmentShader},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'D'})}).catch(()=>{});
+            // #endregion
+            const program = gl.createProgram();
+            gl.attachShader(program, vertexShader);
+            gl.attachShader(program, fragmentShader);
+            gl.linkProgram(program);
+            if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                const errorLog = gl.getProgramInfoLog(program);
+                console.error('Ошибка линковки программы:', errorLog);
+                // #region agent log
+                fetch('http://127.0.0.1:7244/ingest/359c742f-de8c-4e53-abc0-aa808b2c9142',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.html:260',message:'program linking failed',data:{error:errorLog},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'D'})}).catch(()=>{});
+                // #endregion
+                gl.deleteProgram(program);
+                return null;
+            }
+            // #region agent log
+            fetch('http://127.0.0.1:7244/ingest/359c742f-de8c-4e53-abc0-aa808b2c9142',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.html:268',message:'program linked successfully',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'D'})}).catch(()=>{});
+            // #endregion
+            return program;
+        }
+
+        const vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexShaderSource);
+        const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fragmentShaderSource);
+        // #region agent log
+        fetch('http://127.0.0.1:7244/ingest/359c742f-de8c-4e53-abc0-aa808b2c9142',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.html:256',message:'shaders created',data:{vertexShader:!!vertexShader,fragmentShader:!!fragmentShader},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'D'})}).catch(()=>{});
+        // #endregion
+        const program = createProgram(gl, vertexShader, fragmentShader);
+        // #region agent log
+        fetch('http://127.0.0.1:7244/ingest/359c742f-de8c-4e53-abc0-aa808b2c9142',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.html:260',message:'program created',data:{program:!!program},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'D'})}).catch(()=>{});
+        // #endregion
+
+        // ==================== УТИЛИТЫ МАТРИЦ ====================
+        function mat4() {
+            return new Float32Array([
+                1, 0, 0, 0,
+                0, 1, 0, 0,
+                0, 0, 1, 0,
+                0, 0, 0, 1
+            ]);
+        }
+
+        function perspective(fov, aspect, near, far) {
+            const f = 1.0 / Math.tan(fov / 2);
+            const nf = 1 / (near - far);
+            const m = mat4();
+            m[0] = f / aspect;
+            m[5] = f;
+            m[10] = (far + near) * nf;
+            m[11] = -1;
+            m[14] = (2 * far * near) * nf;
+            m[15] = 0;
+            return m;
+        }
+
+        function lookAt(eye, center, up) {
+            const z = [eye[0] - center[0], eye[1] - center[1], eye[2] - center[2]];
+            const len = Math.sqrt(z[0]*z[0] + z[1]*z[1] + z[2]*z[2]);
+            z[0] /= len; z[1] /= len; z[2] /= len;
+            
+            const x = [
+                up[1]*z[2] - up[2]*z[1],
+                up[2]*z[0] - up[0]*z[2],
+                up[0]*z[1] - up[1]*z[0]
+            ];
+            const xlen = Math.sqrt(x[0]*x[0] + x[1]*x[1] + x[2]*x[2]);
+            x[0] /= xlen; x[1] /= xlen; x[2] /= xlen;
+            
+            const y = [
+                z[1]*x[2] - z[2]*x[1],
+                z[2]*x[0] - z[0]*x[2],
+                z[0]*x[1] - z[1]*x[0]
+            ];
+            
+            const m = mat4();
+            m[0] = x[0]; m[4] = x[1]; m[8] = x[2];
+            m[1] = y[0]; m[5] = y[1]; m[9] = y[2];
+            m[2] = z[0]; m[6] = z[1]; m[10] = z[2];
+            m[12] = -(x[0]*eye[0] + x[1]*eye[1] + x[2]*eye[2]);
+            m[13] = -(y[0]*eye[0] + y[1]*eye[1] + y[2]*eye[2]);
+            m[14] = -(z[0]*eye[0] + z[1]*eye[1] + z[2]*eye[2]);
+            return m;
+        }
+
+        function translate(m, x, y, z) {
+            m[12] += x;
+            m[13] += y;
+            m[14] += z;
+            return m;
+        }
+
+        function scale(m, x, y, z) {
+            m[0] *= x; m[4] *= y; m[8] *= z;
+            m[1] *= x; m[5] *= y; m[9] *= z;
+            m[2] *= x; m[6] *= y; m[10] *= z;
+            m[3] *= x; m[7] *= y; m[11] *= z;
+            return m;
+        }
+
+        // ==================== ГЕНЕРАЦИЯ 3D МОДЕЛЕЙ ====================
+        function createPenguinMesh() {
+            const vertices = [];
+            const normals = [];
+            const texCoords = [];
+            const indices = [];
+            let index = 0;
+
+            // Тело (овальная форма, более реалистичная)
+            const bodySegments = 20;
+            const bodyRings = 16;
+            for (let ring = 0; ring <= bodyRings; ring++) {
+                const theta = ring * Math.PI / bodyRings;
+                const sinTheta = Math.sin(theta);
+                const cosTheta = Math.cos(theta);
+                
+                for (let seg = 0; seg <= bodySegments; seg++) {
+                    const phi = seg * 2 * Math.PI / bodySegments;
+                    const sinPhi = Math.sin(phi);
+                    const cosPhi = Math.cos(phi);
+                    
+                    // Овальное тело - шире внизу
+                    const width = 0.35;
+                    const height = 0.5;
+                    const depth = 0.3;
+                    const yOffset = -0.15;
+                    
+                    const x = cosPhi * sinTheta * width;
+                    const y = cosTheta * height + yOffset;
+                    const z = sinPhi * sinTheta * depth;
+                    
+                    vertices.push(x, y, z);
+                    // Нормали для овальной формы
+                    const nx = x / width;
+                    const ny = (y - yOffset) / height;
+                    const nz = z / depth;
+                    const nlen = Math.sqrt(nx*nx + ny*ny + nz*nz);
+                    normals.push(nx/nlen, ny/nlen, nz/nlen);
+                    texCoords.push(seg / bodySegments, ring / bodyRings);
+                    
+                    if (ring < bodyRings && seg < bodySegments) {
+                        const first = ring * (bodySegments + 1) + seg;
+                        const second = first + bodySegments + 1;
+                        indices.push(first, second, first + 1);
+                        indices.push(second, second + 1, first + 1);
+                    }
+                }
+            }
+            index += (bodyRings + 1) * (bodySegments + 1);
+
+            // Голова (более реалистичная форма)
+            const headOffset = index;
+            const headSegments = 16;
+            const headRings = 12;
+            for (let ring = 0; ring <= headRings; ring++) {
+                const theta = ring * Math.PI / headRings;
+                const sinTheta = Math.sin(theta);
+                const cosTheta = Math.cos(theta);
+                
+                for (let seg = 0; seg <= headSegments; seg++) {
+                    const phi = seg * 2 * Math.PI / headSegments;
+                    const sinPhi = Math.sin(phi);
+                    const cosPhi = Math.cos(phi);
+                    
+                    const x = cosPhi * sinTheta * 0.18;
+                    const y = cosTheta * 0.2 + 0.35;
+                    const z = sinPhi * sinTheta * 0.18;
+                    
+                    vertices.push(x, y, z);
+                    const nlen = Math.sqrt(x*x + (y-0.35)*(y-0.35) + z*z);
+                    normals.push(x/nlen, (y-0.35)/nlen, z/nlen);
+                    texCoords.push(seg / headSegments, ring / headRings);
+                    
+                    if (ring < headRings && seg < headSegments) {
+                        const first = headOffset + ring * (headSegments + 1) + seg;
+                        const second = first + headSegments + 1;
+                        indices.push(first, second, first + 1);
+                        indices.push(second, second + 1, first + 1);
+                    }
+                }
+            }
+            index += (headRings + 1) * (headSegments + 1);
+
+            // Клюв (более реалистичный треугольный клюв)
+            const beakOffset = index;
+            const beakLength = 0.12;
+            const beakWidth = 0.06;
+            const beakY = 0.35;
+            const beakZ = 0.18;
+            
+            // Вершина клюва
+            vertices.push(beakZ, beakY, 0);
+            normals.push(0, 0, 1);
+            texCoords.push(0.5, 0.5);
+            index++;
+            
+            // Основание клюва (треугольник)
+            const beakBaseSegments = 12;
+            for (let seg = 0; seg <= beakBaseSegments; seg++) {
+                const phi = seg * 2 * Math.PI / beakBaseSegments;
+                const x = beakZ - beakLength;
+                const y = beakY + Math.cos(phi) * beakWidth * 0.5;
+                const z = Math.sin(phi) * beakWidth;
+                
+                vertices.push(x, y, z);
+                const dirX = beakZ - x;
+                const dirY = beakY - y;
+                const dirZ = 0 - z;
+                const len = Math.sqrt(dirX*dirX + dirY*dirY + dirZ*dirZ);
+                normals.push(dirX/len, dirY/len, dirZ/len);
+                texCoords.push(seg / beakBaseSegments, 0);
+                
+                if (seg < beakBaseSegments) {
+                    indices.push(beakOffset, beakOffset + seg + 1, beakOffset + seg + 2);
+                }
+            }
+            index += beakBaseSegments + 1;
+
+            // Левое крыло
+            const leftWingOffset = index;
+            const wingSegments = 8;
+            const wingRings = 6;
+            for (let ring = 0; ring <= wingRings; ring++) {
+                const t = ring / wingRings;
+                for (let seg = 0; seg <= wingSegments; seg++) {
+                    const phi = seg * Math.PI / wingSegments;
+                    const x = -0.25 - t * 0.15;
+                    const y = -0.1 + t * 0.3;
+                    const z = Math.sin(phi) * (0.15 - t * 0.1);
+                    
+                    vertices.push(x, y, z);
+                    normals.push(-1, 0, 0);
+                    texCoords.push(seg / wingSegments, t);
+                    
+                    if (ring < wingRings && seg < wingSegments) {
+                        const first = leftWingOffset + ring * (wingSegments + 1) + seg;
+                        const second = first + wingSegments + 1;
+                        indices.push(first, second, first + 1);
+                        indices.push(second, second + 1, first + 1);
+                    }
+                }
+            }
+            index += (wingRings + 1) * (wingSegments + 1);
+
+            // Правое крыло
+            const rightWingOffset = index;
+            for (let ring = 0; ring <= wingRings; ring++) {
+                const t = ring / wingRings;
+                for (let seg = 0; seg <= wingSegments; seg++) {
+                    const phi = seg * Math.PI / wingSegments;
+                    const x = 0.25 + t * 0.15;
+                    const y = -0.1 + t * 0.3;
+                    const z = Math.sin(phi) * (0.15 - t * 0.1);
+                    
+                    vertices.push(x, y, z);
+                    normals.push(1, 0, 0);
+                    texCoords.push(seg / wingSegments, t);
+                    
+                    if (ring < wingRings && seg < wingSegments) {
+                        const first = rightWingOffset + ring * (wingSegments + 1) + seg;
+                        const second = first + wingSegments + 1;
+                        indices.push(first, second, first + 1);
+                        indices.push(second, second + 1, first + 1);
+                    }
+                }
+            }
+            index += (wingRings + 1) * (wingSegments + 1);
+
+            // Левая лапка
+            const leftFootOffset = index;
+            const footSegments = 8;
+            for (let ring = 0; ring <= 4; ring++) {
+                const t = ring / 4;
+                const radius = 0.08 * (1 - t * 0.3);
+                for (let seg = 0; seg <= footSegments; seg++) {
+                    const phi = seg * 2 * Math.PI / footSegments;
+                    const x = -0.12;
+                    const y = -0.4 - t * 0.1;
+                    const z = Math.cos(phi) * radius;
+                    
+                    vertices.push(x, y, z);
+                    normals.push(0, -1, 0);
+                    texCoords.push(seg / footSegments, t);
+                    
+                    if (ring < 4 && seg < footSegments) {
+                        const first = leftFootOffset + ring * (footSegments + 1) + seg;
+                        const second = first + footSegments + 1;
+                        indices.push(first, second, first + 1);
+                        indices.push(second, second + 1, first + 1);
+                    }
+                }
+            }
+            index += 5 * (footSegments + 1);
+
+            // Правая лапка
+            const rightFootOffset = index;
+            for (let ring = 0; ring <= 4; ring++) {
+                const t = ring / 4;
+                const radius = 0.08 * (1 - t * 0.3);
+                for (let seg = 0; seg <= footSegments; seg++) {
+                    const phi = seg * 2 * Math.PI / footSegments;
+                    const x = 0.12;
+                    const y = -0.4 - t * 0.1;
+                    const z = Math.cos(phi) * radius;
+                    
+                    vertices.push(x, y, z);
+                    normals.push(0, -1, 0);
+                    texCoords.push(seg / footSegments, t);
+                    
+                    if (ring < 4 && seg < footSegments) {
+                        const first = rightFootOffset + ring * (footSegments + 1) + seg;
+                        const second = first + footSegments + 1;
+                        indices.push(first, second, first + 1);
+                        indices.push(second, second + 1, first + 1);
+                    }
+                }
+            }
+
+            return { vertices, normals, texCoords, indices };
+        }
+
+        function createGroundMesh(size) {
+            const vertices = [];
+            const normals = [];
+            const texCoords = [];
+            const indices = [];
+            
+            const segments = 200; // Увеличиваем детализацию
+            const step = size / segments;
+            
+            for (let i = 0; i <= segments; i++) {
+                for (let j = 0; j <= segments; j++) {
+                    const x = (i - segments/2) * step;
+                    const z = (j - segments/2) * step;
+                    // Снежный пол с реалистичными неровностями
+                    const y = Math.sin(x * 0.03) * 0.08 + Math.sin(z * 0.03) * 0.08 + 
+                              Math.sin(x * 0.12 + z * 0.1) * 0.04 +
+                              Math.sin(x * 0.25 + z * 0.2) * 0.02;
+                    
+                    vertices.push(x, y, z);
+                    
+                    // Вычисляем нормаль для реалистичного освещения снега
+                    const nx = -Math.cos(x * 0.03) * 0.03 - Math.cos(x * 0.12 + z * 0.1) * 0.12 - Math.cos(x * 0.25 + z * 0.2) * 0.25;
+                    const nz = -Math.cos(z * 0.03) * 0.03 - Math.cos(x * 0.12 + z * 0.1) * 0.1 - Math.cos(x * 0.25 + z * 0.2) * 0.2;
+                    const len = Math.sqrt(nx*nx + 1 + nz*nz);
+                    normals.push(nx/len, 1/len, nz/len);
+                    texCoords.push(i / segments, j / segments);
+                    
+                    if (i < segments && j < segments) {
+                        const first = i * (segments + 1) + j;
+                        const second = first + segments + 1;
+                        indices.push(first, second, first + 1);
+                        indices.push(second, second + 1, first + 1);
+                    }
+                }
+            }
+            
+            return { vertices, normals, texCoords, indices };
+        }
+
+        function createMountainMesh() {
+            const vertices = [];
+            const normals = [];
+            const texCoords = [];
+            const indices = [];
+            
+            const baseSize = 30;
+            const height = 25;
+            const segments = 40; // Высокая детализация
+            
+            // Создаем гору с несколькими уровнями для более реалистичной формы
+            const levels = 8;
+            for (let level = 0; level <= levels; level++) {
+                const t = level / levels;
+                const currentHeight = height * t;
+                const currentRadius = baseSize * (1 - t * 0.7); // Сужаемся к вершине
+                
+                for (let i = 0; i <= segments; i++) {
+                    const angle = (i / segments) * Math.PI * 2;
+                    // Добавляем неровности для реалистичности
+                    const noise = Math.sin(angle * 4 + level * 2) * 0.3 + 
+                                 Math.cos(angle * 6 - level * 1.5) * 0.2;
+                    const radius = currentRadius * (1 + noise);
+                    const x = Math.cos(angle) * radius;
+                    const z = Math.sin(angle) * radius;
+                    
+                    vertices.push(x, currentHeight, z);
+                    normals.push(0, 0, 0); // Инициализируем нулями
+                    texCoords.push(i / segments, t);
+                }
+            }
+            
+            // Создаем индексы для треугольников между уровнями
+            for (let level = 0; level < levels; level++) {
+                for (let i = 0; i < segments; i++) {
+                    const current = level * (segments + 1) + i;
+                    const next = current + segments + 1;
+                    const currentNext = current + 1;
+                    const nextNext = next + 1;
+                    
+                    // Два треугольника для каждого квадрата
+                    indices.push(current, next, currentNext);
+                    indices.push(currentNext, next, nextNext);
+                }
+            }
+            
+            // Вычисляем нормали для каждой вершины
+            for (let i = 0; i < indices.length; i += 3) {
+                const i1 = indices[i];
+                const i2 = indices[i + 1];
+                const i3 = indices[i + 2];
+                
+                const v1 = [vertices[i1*3], vertices[i1*3+1], vertices[i1*3+2]];
+                const v2 = [vertices[i2*3], vertices[i2*3+1], vertices[i2*3+2]];
+                const v3 = [vertices[i3*3], vertices[i3*3+1], vertices[i3*3+2]];
+                
+                const edge1 = [v2[0] - v1[0], v2[1] - v1[1], v2[2] - v1[2]];
+                const edge2 = [v3[0] - v1[0], v3[1] - v1[1], v3[2] - v1[2]];
+                
+                const normal = [
+                    edge1[1] * edge2[2] - edge1[2] * edge2[1],
+                    edge1[2] * edge2[0] - edge1[0] * edge2[2],
+                    edge1[0] * edge2[1] - edge1[1] * edge2[0]
+                ];
+                
+                const len = Math.sqrt(normal[0]*normal[0] + normal[1]*normal[1] + normal[2]*normal[2]);
+                if (len > 0) {
+                    normal[0] /= len;
+                    normal[1] /= len;
+                    normal[2] /= len;
+                    
+                    // Добавляем нормаль к каждой вершине треугольника
+                    normals[i1*3] += normal[0];
+                    normals[i1*3+1] += normal[1];
+                    normals[i1*3+2] += normal[2];
+                    
+                    normals[i2*3] += normal[0];
+                    normals[i2*3+1] += normal[1];
+                    normals[i2*3+2] += normal[2];
+                    
+                    normals[i3*3] += normal[0];
+                    normals[i3*3+1] += normal[1];
+                    normals[i3*3+2] += normal[2];
+                }
+            }
+            
+            // Нормализуем нормали
+            for (let i = 0; i < normals.length; i += 3) {
+                const len = Math.sqrt(normals[i]*normals[i] + normals[i+1]*normals[i+1] + normals[i+2]*normals[i+2]);
+                if (len > 0) {
+                    normals[i] /= len;
+                    normals[i+1] /= len;
+                    normals[i+2] /= len;
+                } else {
+                    normals[i] = 0;
+                    normals[i+1] = 1;
+                    normals[i+2] = 0;
+                }
+            }
+            
+            return { vertices, normals, texCoords, indices };
+        }
+
+        // ==================== СОЗДАНИЕ БУФЕРОВ ====================
+        function createBuffer(gl, data) {
+            const buffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.STATIC_DRAW);
+            return buffer;
+        }
+
+        function createIndexBuffer(gl, data) {
+            const buffer = gl.createBuffer();
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffer);
+            gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(data), gl.STATIC_DRAW);
+            return buffer;
+        }
+
+        const penguinMesh = createPenguinMesh();
+        const groundMesh = createGroundMesh(500); // Увеличиваем размер пола
+        const mountainMesh = createMountainMesh();
+
+        // ==================== КЛАСС ПИНГВИНА ====================
+        class Penguin3D {
+            constructor(x, y, z, isPlayer = false) {
+                this.x = x;
+                this.y = y;
+                this.z = z;
+                this.isPlayer = isPlayer;
+                this.rotation = Math.random() * Math.PI * 2;
+            }
+
+            getModelMatrix() {
+                const m = mat4();
+                translate(m, this.x, this.y, this.z);
+                scale(m, PENGUIN_SCALE, PENGUIN_SCALE, PENGUIN_SCALE);
+                return m;
+            }
+        }
+
+        // ==================== КАМЕРА ОТ ПЕРВОГО ЛИЦА ====================
+        class FirstPersonCamera {
+            constructor() {
+                this.x = 0;
+                this.y = PLAYER_HEIGHT; // Игрок стоит на высоте PLAYER_HEIGHT над полом (y=0)
+                this.z = 0;
+                this.yaw = 0;
+                this.pitch = 0;
+                this.speed = 0.05;
+            }
+
+            update(keys, mouseDeltaX, mouseDeltaY) {
+                // Поворот камеры мышью
+                this.yaw -= mouseDeltaX * 0.002;
+                this.pitch -= mouseDeltaY * 0.002;
+                this.pitch = Math.max(-Math.PI/2, Math.min(Math.PI/2, this.pitch));
+
+                // Движение (исправлена инверсия - W теперь вперед)
+                const forwardX = Math.sin(this.yaw);
+                const forwardZ = Math.cos(this.yaw);
+                const rightX = Math.cos(this.yaw);
+                const rightZ = -Math.sin(this.yaw);
+
+                if (keys['w'] || keys['W'] || keys['ArrowUp']) {
+                    this.x += forwardX * this.speed;
+                    this.z += forwardZ * this.speed;
+                }
+                if (keys['s'] || keys['S'] || keys['ArrowDown']) {
+                    this.x -= forwardX * this.speed;
+                    this.z -= forwardZ * this.speed;
+                }
+                if (keys['a'] || keys['A'] || keys['ArrowLeft']) {
+                    this.x -= rightX * this.speed;
+                    this.z -= rightZ * this.speed;
+                }
+                if (keys['d'] || keys['D'] || keys['ArrowRight']) {
+                    this.x += rightX * this.speed;
+                    this.z += rightZ * this.speed;
+                }
+            }
+
+            getViewMatrix() {
+                const eye = [this.x, this.y, this.z];
+                const center = [
+                    this.x + Math.sin(this.yaw) * Math.cos(this.pitch),
+                    this.y + Math.sin(this.pitch),
+                    this.z + Math.cos(this.yaw) * Math.cos(this.pitch)
+                ];
+                return lookAt(eye, center, [0, 1, 0]);
+            }
+
+            getPosition() {
+                return [this.x, this.y, this.z];
+            }
+        }
+
+        // ==================== АУДИО МЕНЕДЖЕР ====================
+        class AudioManager {
+            constructor() {
+                this.audioContext = null;
+                this.noiseNode = null;
+                this.gainNode = null;
+                this.stepGainNode = null;
+                this.stepBuffer = null;
+                this.lastStepTime = 0;
+                this.stepInterval = 400;
+            }
+
+            async init() {
+                try {
+                    this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    await this.createWindSound();
+                    this.createStepSound();
+                } catch (error) {
+                    console.log('Audio initialization failed:', error);
+                }
+            }
+
+            async createWindSound() {
+                if (!this.audioContext) return;
+                const bufferSize = 4096;
+                const buffer = this.audioContext.createBuffer(1, bufferSize, this.audioContext.sampleRate);
+                const data = buffer.getChannelData(0);
+
+                let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
+                for (let i = 0; i < bufferSize; i++) {
+                    const white = Math.random() * 2 - 1;
+                    b0 = 0.99886 * b0 + white * 0.0555174;
+                    b1 = 0.99332 * b1 + white * 0.0750759;
+                    b2 = 0.96900 * b2 + white * 0.1538520;
+                    b3 = 0.86650 * b3 + white * 0.3104856;
+                    b4 = 0.55000 * b4 + white * 0.5329522;
+                    b5 = -0.7616 * b5 - white * 0.0168980;
+                    data[i] = b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362;
+                    data[i] *= 0.11;
+                    b6 = white * 0.115926;
+                }
+
+                const source = this.audioContext.createBufferSource();
+                source.buffer = buffer;
+                source.loop = true;
+
+                const filter = this.audioContext.createBiquadFilter();
+                filter.type = 'lowpass';
+                filter.frequency.value = 800;
+                filter.Q.value = 1;
+
+                this.gainNode = this.audioContext.createGain();
+                this.gainNode.gain.value = 0;
+
+                source.connect(filter);
+                filter.connect(this.gainNode);
+                this.gainNode.connect(this.audioContext.destination);
+
+                source.start(0);
+                this.noiseNode = source;
+            }
+
+            createStepSound() {
+                if (!this.audioContext) return;
+                const bufferSize = this.audioContext.sampleRate * 0.1;
+                const buffer = this.audioContext.createBuffer(1, bufferSize, this.audioContext.sampleRate);
+                const data = buffer.getChannelData(0);
+
+                for (let i = 0; i < bufferSize; i++) {
+                    const t = i / bufferSize;
+                    const decay = Math.pow(1 - t, 2);
+                    data[i] = (Math.random() * 2 - 1) * decay * 0.3;
+                }
+
+                this.stepBuffer = buffer;
+                this.stepGainNode = this.audioContext.createGain();
+                this.stepGainNode.gain.value = 0.15;
+                this.stepGainNode.connect(this.audioContext.destination);
+            }
+
+            playStep() {
+                if (!this.audioContext || !this.stepBuffer || !this.stepGainNode) return;
+                const now = Date.now();
+                if (now - this.lastStepTime < this.stepInterval) return;
+                this.lastStepTime = now;
+
+                const source = this.audioContext.createBufferSource();
+                source.buffer = this.stepBuffer;
+                const filter = this.audioContext.createBiquadFilter();
+                filter.type = 'bandpass';
+                filter.frequency.value = 200 + Math.random() * 100;
+                filter.Q.value = 2;
+                source.connect(filter);
+                filter.connect(this.stepGainNode);
+                source.start(0);
+            }
+
+            updateVolume(distance, isMoving) {
+                if (!this.gainNode) return;
+                const progress = Math.min(1, distance / FINAL_DISTANCE);
+                const targetVolume = progress * 0.4;
+                this.gainNode.gain.value += (targetVolume - this.gainNode.gain.value) * 0.05;
+                if (isMoving) this.playStep();
+            }
+
+            start() {
+                if (this.audioContext && this.audioContext.state === 'suspended') {
+                    this.audioContext.resume();
+                }
+            }
+        }
+
+        // ==================== ОСНОВНОЙ КЛАСС ИГРЫ ====================
+        class Game3D {
+            constructor() {
+                // #region agent log
+                fetch('http://127.0.0.1:7244/ingest/359c742f-de8c-4e53-abc0-aa808b2c9142',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.html:739',message:'Game3D constructor called',data:{timestamp:Date.now()},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
+                // #endregion
+                this.state = 'START';
+                this.keys = {};
+                this.mouseX = 0;
+                this.mouseY = 0;
+                this.lastMouseX = 0;
+                this.lastMouseY = 0;
+                this.camera = new FirstPersonCamera();
+                this.penguins = [];
+                this.audioManager = new AudioManager();
+                this.distance = 0;
+                this.fadeAlpha = 0;
+                this.finaleTextAlpha = 0;
+                this.time = 0;
+
+                // Настройка WebGL
+                this.setupWebGL();
+                this.init();
+            }
+
+            setupWebGL() {
+                // #region agent log
+                fetch('http://127.0.0.1:7244/ingest/359c742f-de8c-4e53-abc0-aa808b2c9142',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.html:791',message:'setupWebGL called',data:{glExists:!!gl,programExists:!!program,programValue:program},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+                // #endregion
+                if (!program) {
+                    // #region agent log
+                    fetch('http://127.0.0.1:7244/ingest/359c742f-de8c-4e53-abc0-aa808b2c9142',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.html:798',message:'program is null, cannot setup WebGL',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+                    // #endregion
+                    throw new Error('WebGL program failed to link. Check console for details.');
+                }
+                try {
+                    gl.useProgram(program);
+                    gl.enable(gl.DEPTH_TEST);
+                    gl.enable(gl.CULL_FACE);
+                    gl.cullFace(gl.BACK);
+                } catch (e) {
+                    // #region agent log
+                    fetch('http://127.0.0.1:7244/ingest/359c742f-de8c-4e53-abc0-aa808b2c9142',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.html:807',message:'setupWebGL error',data:{error:e.message,stack:e.stack},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+                    // #endregion
+                    throw e;
+                }
+
+                // Создание буферов для пингвина
+                this.penguinVertexBuffer = createBuffer(gl, penguinMesh.vertices);
+                this.penguinNormalBuffer = createBuffer(gl, penguinMesh.normals);
+                this.penguinTexBuffer = createBuffer(gl, penguinMesh.texCoords);
+                this.penguinIndexBuffer = createIndexBuffer(gl, penguinMesh.indices);
+                this.penguinIndexCount = penguinMesh.indices.length;
+
+                // Создание буферов для земли
+                this.groundVertexBuffer = createBuffer(gl, groundMesh.vertices);
+                this.groundNormalBuffer = createBuffer(gl, groundMesh.normals);
+                this.groundTexBuffer = createBuffer(gl, groundMesh.texCoords);
+                this.groundIndexBuffer = createIndexBuffer(gl, groundMesh.indices);
+                this.groundIndexCount = groundMesh.indices.length;
+
+                // Создание буферов для горы
+                this.mountainVertexBuffer = createBuffer(gl, mountainMesh.vertices);
+                this.mountainNormalBuffer = createBuffer(gl, mountainMesh.normals);
+                this.mountainTexBuffer = createBuffer(gl, mountainMesh.texCoords);
+                this.mountainIndexBuffer = createIndexBuffer(gl, mountainMesh.indices);
+                this.mountainIndexCount = mountainMesh.indices.length;
+
+                // Получение атрибутов и uniform'ов
+                this.positionLoc = gl.getAttribLocation(program, 'a_position');
+                this.normalLoc = gl.getAttribLocation(program, 'a_normal');
+                this.texCoordLoc = gl.getAttribLocation(program, 'a_texCoord');
+
+                this.projectionLoc = gl.getUniformLocation(program, 'u_projection');
+                this.viewLoc = gl.getUniformLocation(program, 'u_view');
+                this.modelLoc = gl.getUniformLocation(program, 'u_model');
+                this.colorLoc = gl.getUniformLocation(program, 'u_color');
+                this.ambientColorLoc = gl.getUniformLocation(program, 'u_ambientColor');
+                this.lightDirLoc = gl.getUniformLocation(program, 'u_lightDir');
+                this.timeLoc = gl.getUniformLocation(program, 'u_time');
+                this.fogDistanceLoc = gl.getUniformLocation(program, 'u_fogDistance');
+                this.cameraPosLoc = gl.getUniformLocation(program, 'u_cameraPos');
+            }
+
+            async init() {
+                // #region agent log
+                fetch('http://127.0.0.1:7244/ingest/359c742f-de8c-4e53-abc0-aa808b2c9142',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.html:802',message:'init called',data:{state:this.state},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
+                // #endregion
+                try {
+                    await this.audioManager.init();
+                    this.setupEventListeners();
+                    this.createStartScene();
+                    this.gameLoop();
+                } catch (e) {
+                    // #region agent log
+                    fetch('http://127.0.0.1:7244/ingest/359c742f-de8c-4e53-abc0-aa808b2c9142',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.html:808',message:'init error',data:{error:e.message,stack:e.stack},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
+                    // #endregion
+                }
+            }
+
+            setupEventListeners() {
+                // #region agent log
+                const startButton = document.getElementById('startButton');
+                fetch('http://127.0.0.1:7244/ingest/359c742f-de8c-4e53-abc0-aa808b2c9142',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.html:809',message:'setupEventListeners called',data:{buttonExists:!!startButton,buttonId:startButton?.id},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+                // #endregion
+                if (!startButton) {
+                    // #region agent log
+                    fetch('http://127.0.0.1:7244/ingest/359c742f-de8c-4e53-abc0-aa808b2c9142',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.html:815',message:'startButton not found',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+                    // #endregion
+                    return;
+                }
+                startButton.addEventListener('click', () => {
+                    // #region agent log
+                    fetch('http://127.0.0.1:7244/ingest/359c742f-de8c-4e53-abc0-aa808b2c9142',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.html:818',message:'startButton click handler called',data:{currentState:this.state},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+                    // #endregion
+                    this.startGame();
+                });
+
+                window.addEventListener('keydown', (e) => {
+                    this.keys[e.key] = true;
+                });
+
+                window.addEventListener('keyup', (e) => {
+                    this.keys[e.key] = false;
+                });
+
+                let isPointerLocked = false;
+                canvas.addEventListener('click', () => {
+                    if (this.state === 'PLAYING') {
+                        canvas.requestPointerLock();
+                    }
+                });
+
+                document.addEventListener('pointerlockchange', () => {
+                    isPointerLocked = document.pointerLockElement === canvas;
+                });
+
+                document.addEventListener('mousemove', (e) => {
+                    if (isPointerLocked && this.state === 'PLAYING') {
+                        this.mouseX += e.movementX;
+                        this.mouseY += e.movementY;
+                    }
+                });
+            }
+
+            createStartScene() {
+                // Создаем толпу пингвинов вокруг игрока
+                this.penguins = [];
+                for (let i = 0; i < CROWD_SIZE; i++) {
+                    const angle = (Math.PI * 2 / CROWD_SIZE) * i;
+                    const radius = 2 + Math.random() * 3;
+                    const x = Math.cos(angle) * radius;
+                    const z = Math.sin(angle) * radius;
+                    // Пингвины стоят на полу (высота 0)
+                    this.penguins.push(new Penguin3D(x, 0, z, false));
+                }
+            }
+
+            startGame() {
+                // #region agent log
+                fetch('http://127.0.0.1:7244/ingest/359c742f-de8c-4e53-abc0-aa808b2c9142',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.html:853',message:'startGame called',data:{stateBefore:this.state},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+                // #endregion
+                try {
+                    this.state = 'PLAYING';
+                    // #region agent log
+                    fetch('http://127.0.0.1:7244/ingest/359c742f-de8c-4e53-abc0-aa808b2c9142',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.html:857',message:'state changed to PLAYING',data:{stateAfter:this.state},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+                    // #endregion
+                    const button = document.getElementById('startButton');
+                    const instructions = document.getElementById('instructions');
+                    if (button) button.classList.add('hidden');
+                    if (instructions) instructions.style.opacity = '0';
+                    // Скрываем курсор только во время игры
+                    document.body.classList.add('playing');
+                    this.audioManager.start();
+                    // Запуск фоновой музыки
+                    const bgMusic = document.getElementById('backgroundMusic');
+                    if (bgMusic) {
+                        bgMusic.volume = 0.5;
+                        bgMusic.play().catch(e => console.log('Не удалось воспроизвести музыку:', e));
+                    }
+                    canvas.requestPointerLock();
+                } catch (e) {
+                    // #region agent log
+                    fetch('http://127.0.0.1:7244/ingest/359c742f-de8c-4e53-abc0-aa808b2c9142',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.html:866',message:'startGame error',data:{error:e.message,stack:e.stack},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+                    // #endregion
+                }
+            }
+
+            update() {
+                this.time += 0.01;
+
+                // #region agent log
+                if (this.time % 1 < 0.02) { // Логируем раз в секунду
+                    fetch('http://127.0.0.1:7244/ingest/359c742f-de8c-4e53-abc0-aa808b2c9142',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.html:861',message:'update called',data:{state:this.state,time:this.time.toFixed(2)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+                }
+                // #endregion
+
+                if (this.state === 'PLAYING') {
+                    const mouseDeltaX = this.mouseX - this.lastMouseX;
+                    const mouseDeltaY = this.mouseY - this.lastMouseY;
+                    this.lastMouseX = this.mouseX;
+                    this.lastMouseY = this.mouseY;
+
+                    this.camera.update(this.keys, mouseDeltaX, mouseDeltaY);
+                    
+                    const pos = this.camera.getPosition();
+                    this.distance = Math.sqrt(pos[0] * pos[0] + pos[2] * pos[2]);
+                    
+                    const isMoving = this.keys['w'] || this.keys['W'] || this.keys['s'] || 
+                                   this.keys['S'] || this.keys['a'] || this.keys['A'] || 
+                                   this.keys['d'] || this.keys['D'];
+                    this.audioManager.updateVolume(this.distance, isMoving);
+
+                    if (this.distance >= FINAL_DISTANCE) {
+                        this.state = 'FINALE';
+                    }
+                } else if (this.state === 'FINALE') {
+                    this.fadeAlpha = Math.min(1, this.fadeAlpha + 0.01);
+                    if (this.fadeAlpha >= 0.8) {
+                        this.finaleTextAlpha = Math.min(1, this.finaleTextAlpha + 0.02);
+                    }
+                }
+            }
+
+            drawMesh(mesh, vertexBuffer, normalBuffer, texBuffer, indexBuffer, indexCount, modelMatrix, color) {
+                gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+                gl.enableVertexAttribArray(this.positionLoc);
+                gl.vertexAttribPointer(this.positionLoc, 3, gl.FLOAT, false, 0, 0);
+
+                gl.bindBuffer(gl.ARRAY_BUFFER, normalBuffer);
+                gl.enableVertexAttribArray(this.normalLoc);
+                gl.vertexAttribPointer(this.normalLoc, 3, gl.FLOAT, false, 0, 0);
+
+                gl.bindBuffer(gl.ARRAY_BUFFER, texBuffer);
+                gl.enableVertexAttribArray(this.texCoordLoc);
+                gl.vertexAttribPointer(this.texCoordLoc, 2, gl.FLOAT, false, 0, 0);
+
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+                gl.uniformMatrix4fv(this.modelLoc, false, modelMatrix);
+                gl.uniform3fv(this.colorLoc, color);
+                gl.drawElements(gl.TRIANGLES, indexCount, gl.UNSIGNED_SHORT, 0);
+            }
+
+            draw() {
+                gl.clearColor(0.7, 0.8, 0.9, 1.0);
+                gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+                const aspect = canvas.width / canvas.height;
+                const projection = perspective(Math.PI / 4, aspect, 0.1, 1000);
+                const view = this.camera.getViewMatrix();
+                const cameraPos = this.camera.getPosition();
+
+                gl.uniformMatrix4fv(this.projectionLoc, false, projection);
+                gl.uniformMatrix4fv(this.viewLoc, false, view);
+                gl.uniform3fv(this.ambientColorLoc, [0.3, 0.3, 0.35]);
+                gl.uniform3fv(this.lightDirLoc, [0.5, -1, 0.3]);
+                gl.uniform1f(this.timeLoc, this.time);
+                gl.uniform1f(this.fogDistanceLoc, 50);
+                gl.uniform3fv(this.cameraPosLoc, cameraPos);
+
+                // Отрисовка снежного пола
+                const groundModel = mat4();
+                // Пол уже создан с y=0, не нужно смещать
+                this.drawMesh(
+                    groundMesh,
+                    this.groundVertexBuffer,
+                    this.groundNormalBuffer,
+                    this.groundTexBuffer,
+                    this.groundIndexBuffer,
+                    this.groundIndexCount,
+                    groundModel,
+                    [1.0, 1.0, 1.0] // Чисто белый цвет для снега
+                );
+
+                // Отрисовка пингвинов
+                for (const penguin of this.penguins) {
+                    const model = penguin.getModelMatrix();
+                    const color = penguin.isPlayer ? [0, 0, 0] : [0.2, 0.2, 0.2];
+                    this.drawMesh(
+                        penguinMesh,
+                        this.penguinVertexBuffer,
+                        this.penguinNormalBuffer,
+                        this.penguinTexBuffer,
+                        this.penguinIndexBuffer,
+                        this.penguinIndexCount,
+                        model,
+                        color
+                    );
+                }
+
+                // Гора вдалеке (одна гора) - всегда видна
+                const mountainModel = mat4();
+                translate(mountainModel, 0, 0, -FINAL_DISTANCE);
+                this.drawMesh(
+                    mountainMesh,
+                    this.mountainVertexBuffer,
+                    this.mountainNormalBuffer,
+                    this.mountainTexBuffer,
+                    this.mountainIndexBuffer,
+                    this.mountainIndexCount,
+                    mountainModel,
+                    [0.5, 0.52, 0.55] // Темно-серый цвет для скал
+                );
+                
+                // Снег на вершине горы (верхняя треть)
+                const snowModel = mat4();
+                translate(snowModel, 0, 18, -FINAL_DISTANCE);
+                scale(snowModel, 0.5, 0.4, 0.5);
+                this.drawMesh(
+                    mountainMesh,
+                    this.mountainVertexBuffer,
+                    this.mountainNormalBuffer,
+                    this.mountainTexBuffer,
+                    this.mountainIndexBuffer,
+                    this.mountainIndexCount,
+                    snowModel,
+                    [0.98, 0.99, 1.0] // Яркий белый снег
+                );
+
+                // Затемнение для финала
+                if (this.state === 'FINALE') {
+                    const overlay = document.getElementById('fadeOverlay');
+                    overlay.style.opacity = this.fadeAlpha;
+                    const finaleText = document.getElementById('finaleText');
+                    finaleText.style.opacity = this.finaleTextAlpha;
+                }
+            }
+
+            gameLoop() {
+                // #region agent log
+                if (this.time < 0.1) { // Логируем только первые несколько кадров
+                    fetch('http://127.0.0.1:7244/ingest/359c742f-de8c-4e53-abc0-aa808b2c9142',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'index.html:950',message:'gameLoop iteration',data:{state:this.state,time:this.time.toFixed(2)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
+                }
+                // #endregion
+                this.update();
+                this.draw();
+                requestAnimationFrame(() => this.gameLoop());
+            }
+        }
+
+        // ==================== ЗАПУСК ИГРЫ ====================
+        window.addEventListener('load', () => {
+            new Game3D();
+        });
+
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            gl.viewport(0, 0, canvas.width, canvas.height);
+        });
+    </script>
+</body>
+</html>
